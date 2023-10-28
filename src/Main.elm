@@ -1,21 +1,25 @@
 module Main exposing (..)
 
+import AppUrl
 import AssocSet
 import Browser
+import Browser.Navigation as Navigation
 import Bytes.Encode
+import Dict
 import Element exposing (Element)
 import Element.Background
 import Element.Border
 import Element.Font as Font
 import Element.Input as Input
-import File
 import File.Download
 import Html exposing (Html)
 import Json.Decode
-import Json.Encode
 import Platform.Cmd as Cmd
 import String.Format
 import Time
+import Url
+import Url.Builder
+import Url.Parser exposing ((</>), (<?>))
 import Zip exposing (Zip)
 import Zip.Entry
 
@@ -27,11 +31,31 @@ type DataFormat
     | Xml
 
 
+dataformatToString : DataFormat -> String
+dataformatToString dataformat =
+    case dataformat of
+        Json ->
+            "json"
+
+        Html ->
+            "html"
+
+        Graphql ->
+            "graphql"
+
+        Xml ->
+            "xml"
+
+
 type Page
     = GetStarted
     | DataFormats
     | PrimaryDatabase
     | PickLoggingFramework
+    | PreferredEditor
+    | VSCodeAdvice
+    | IntelliJAdvice
+    | OtherEditorAdvice
     | Finish
 
 
@@ -46,30 +70,176 @@ type PrimaryDatabase
     | Sqlite
 
 
+primaryDatabaseToString : PrimaryDatabase -> String
+primaryDatabaseToString primaryDatabase =
+    case primaryDatabase of
+        Postgres ->
+            "postgres"
+
+        Mysql ->
+            "mysql"
+
+        Sqlite ->
+            "sqlite"
+
+
+primaryDatabaseFromString : String -> Result String PrimaryDatabase
+primaryDatabaseFromString s =
+    case s of
+        "postgres" ->
+            Ok Postgres
+
+        "mysql" ->
+            Ok Mysql
+
+        "sqlite" ->
+            Ok Sqlite
+
+        _ ->
+            Err s
+
+
 type LoggingFramework
     = Slf4jSimple
     | Logback
     | Log4j
 
 
+loggingFrameworkToString : LoggingFramework -> String
+loggingFrameworkToString loggingFramework =
+    case loggingFramework of
+        Slf4jSimple ->
+            "slf4j-simple"
+
+        Logback ->
+            "logback"
+
+        Log4j ->
+            "log4j"
+
+
+loggingFrameworkFromString : String -> Result String LoggingFramework
+loggingFrameworkFromString s =
+    case s of
+        "slf4j-simple" ->
+            Ok Slf4jSimple
+
+        "logback" ->
+            Ok Logback
+
+        "log4j" ->
+            Ok Log4j
+
+        _ ->
+            Err s
+
+
+type PreferredEditor
+    = VSCode
+    | IntelliJ
+    | OtherEditor
+
+
+preferredEditorToString : PreferredEditor -> String
+preferredEditorToString preferredEditor =
+    case preferredEditor of
+        VSCode ->
+            "vscode"
+
+        IntelliJ ->
+            "intellij"
+
+        OtherEditor ->
+            "other"
+
+
+preferredEditorFromString : String -> Result String PreferredEditor
+preferredEditorFromString s =
+    case s of
+        "vscode" ->
+            Ok VSCode
+
+        "intellij" ->
+            Ok IntelliJ
+
+        "other" ->
+            Ok OtherEditor
+
+        _ ->
+            Err s
+
+
 type alias Model =
-    { page : Page
+    { navKey : Navigation.Key
+    , url : AppUrl.AppUrl
+    , page : Page
     , dataformats : AssocSet.Set DataFormat
     , appType : AppType
     , primaryDatabase : Maybe PrimaryDatabase
     , loggingFramework : LoggingFramework
     , projectName : String
-    , groupId : String
+    , preferredEditor : Maybe PreferredEditor
     }
 
 
+hydrateModel : Model -> Model
+hydrateModel model =
+    let
+        { url } =
+            model
+    in
+    { model
+        | primaryDatabase =
+            Dict.get "primaryDatabase" url.queryParameters
+                |> Maybe.andThen List.head
+                |> Maybe.map primaryDatabaseFromString
+                |> Maybe.map Result.toMaybe
+                |> Maybe.withDefault model.primaryDatabase
+        , preferredEditor =
+            Dict.get "preferredEditor" url.queryParameters
+                |> Maybe.andThen List.head
+                |> Maybe.map preferredEditorFromString
+                |> Maybe.andThen Result.toMaybe
+                |> Maybe.map Just
+                |> Maybe.withDefault model.preferredEditor
+        , loggingFramework =
+            Dict.get "loggingFramework" url.queryParameters
+                |> Maybe.andThen List.head
+                |> Maybe.map loggingFrameworkFromString
+                |> Maybe.andThen Result.toMaybe
+                |> Maybe.withDefault model.loggingFramework
+    }
+
+
+modelToQueryParams : Model -> AppUrl.QueryParameters
+modelToQueryParams model =
+    (Dict.empty
+        |> (model.primaryDatabase
+                |> Maybe.map primaryDatabaseToString
+                |> Maybe.map (Dict.insert "primaryDatabase")
+                |> Maybe.withDefault (\params -> params)
+           )
+        |> (model.preferredEditor
+                |> Maybe.map preferredEditorToString
+                |> Maybe.map (Dict.insert "preferredEditor")
+                |> Maybe.withDefault (\params -> params)
+           )
+        |> Dict.insert "loggingFramework" (loggingFrameworkToString model.loggingFramework)
+    )
+        |> Dict.map (\_ v -> [ v ])
+        |> Dict.insert "dataFormat" (model.dataformats |> AssocSet.map dataformatToString |> AssocSet.toList)
+
+
 type Msg
-    = SelectDataFormat DataFormat
+    = SelectPreferredEditor PreferredEditor
+    | SelectDataFormat DataFormat
     | SelectPrimaryDatabase PrimaryDatabase
     | SelectLoggingFramework LoggingFramework
     | Next
     | Prev
     | Download
+    | UrlRequest Browser.UrlRequest
+    | UrlChange Url.Url
     | NoOp
 
 
@@ -77,15 +247,17 @@ type alias Flags =
     Json.Decode.Value
 
 
-init : Json.Decode.Value -> ( Model, Cmd Msg )
-init _ =
-    ( { page = GetStarted
+init : Json.Decode.Value -> Url.Url -> Navigation.Key -> ( Model, Cmd Msg )
+init _ url key =
+    ( { navKey = key
+      , url = AppUrl.fromUrl url
+      , page = GetStarted
       , dataformats = AssocSet.empty
       , appType = MPA
       , primaryDatabase = Nothing
       , loggingFramework = Slf4jSimple
       , projectName = "Clojure QuickStart"
-      , groupId = "org.example"
+      , preferredEditor = Nothing
       }
     , Cmd.none
     )
@@ -100,6 +272,7 @@ dependencies model =
     [ { library = "org.clojure/clojure", version = "1.11.0" }
     , { library = "info.sunng/ring-jetty9-adapter", version = "0.30.1" }
     , { library = "org.slf4j/slf4j-api", version = "2.0.9" }
+    , { library = "metosin/reitit-ring", version = "0.7.0-alpha7" }
     ]
         ++ (case model.loggingFramework of
                 Slf4jSimple ->
@@ -156,9 +329,27 @@ dependencies model =
            )
 
 
-depToString : Dependency -> String
-depToString { library, version } =
-    library ++ " {:mvn/version \"" ++ version ++ "\"}"
+depsToString : List Dependency -> List String
+depsToString deps =
+    let
+        biggestLibraryNameInList =
+            deps
+                |> List.map (\{ library } -> String.length library)
+                |> List.maximum
+                |> Maybe.withDefault 0
+    in
+    List.map (depToString biggestLibraryNameInList) deps
+
+
+depToString : Int -> Dependency -> String
+depToString biggestLibraryNameInList { library, version } =
+    library
+        ++ String.repeat
+            (biggestLibraryNameInList - String.length library + 1)
+            " "
+        ++ "{:mvn/version \""
+        ++ version
+        ++ "\"}"
 
 
 testDependencies : Model -> List Dependency
@@ -178,7 +369,7 @@ depsEdn model =
             testDependencies model
     in
     """{:deps {{{deps}}}
-:paths ["src"]
+:paths ["src" "resources"]
 :aliases {:dev {:extra-deps {{{dev_deps}}}
                 :extra-paths ["dev", "test"]}
           :test {:extra-deps {{{test_deps}}}
@@ -195,17 +386,17 @@ depsEdn model =
                 :language   :clojure}}}"""
         |> String.Format.namedValue "deps"
             (deps
-                |> List.map depToString
+                |> depsToString
                 |> String.join ("\n" ++ String.repeat 8 " ")
             )
         |> String.Format.namedValue "test_deps"
             (testDeps
-                |> List.map depToString
+                |> depsToString
                 |> String.join ("\n" ++ String.repeat 30 " ")
             )
         |> String.Format.namedValue "dev_deps"
             (testDeps
-                |> List.map depToString
+                |> depsToString
                 |> String.join ("\n" ++ String.repeat 29 " ")
             )
 
@@ -218,10 +409,11 @@ testsEdn _ =
 
 mainClj : Model -> String
 mainClj _ =
-    """(ns main)
+    """(ns main
+  (:require [system :as system]))
 
 (defn -main [& _]
-  (println "Hello"))
+  (system/start-system))
 """
 
 
@@ -238,23 +430,40 @@ mainTestClj _ =
 systemClj : Model -> String
 systemClj _ =
     """(ns system
-  (:require [routes :as routes]
-            [system.server :as server]))
+  (:require [ring.adapter.jetty9 :as jetty9]
+            [routes :as routes]))
+
+(set! *warn-on-reflection* true)
+
+(defn start-server
+  [system]
+  (jetty9/run-jetty (if (not= (System/getenv "ENVIRONMENT") "production")
+                      (partial #'routes/root-handler system)
+                      (routes/root-handler system))
+                    {:join? false
+                     :host  "0.0.0.0"
+                     :port  (or (some-> (System/getenv "PORT")
+                                        (parse-long))
+                                6000)}))
+
+(defn stop-server
+  [server]
+  (.stop server))
 
 (defn start-system []
   (let [system {}
-        system (assoc system ::server (server/start-server
-                                       (partial #'routes/root-handler system)))]
+        system (assoc system ::server (start-server system))]
     system))
 
 (defn stop-system [system]
-  (server/stop-server (::server system))
+  (stop-server (::server system))
   nil)"""
 
 
 routesClj : Model -> String
 routesClj _ =
-    """(ns routes)
+    """(ns routes
+  (:require [rei]))
 
 (defn root-handler
   [_system request]
@@ -277,14 +486,17 @@ devUser _ =
 
 (defn start-system!
   []
-  (if system
-    (println "Already Started")
+  (when-not system
     (alter-var-root #'system (constantly (system/start-system)))))
 
 (defn restart-system!
   []
   (stop-system!)
   (start-system!))
+
+(defn server
+  []
+  (::system/server system))
 
 (comment
   (start-system!)
@@ -305,6 +517,11 @@ cljfmtEdn _ =
 cljkondoConfig : Model -> String
 cljkondoConfig _ =
     "{:linters {:warn-on-reflection {:level :warning}}}"
+
+
+resourcesGitkeep : Model -> String
+resourcesGitkeep _ =
+    ""
 
 
 lintYml : Model -> String
@@ -338,6 +555,9 @@ jobs:
           cli: 'latest'
           bb: 'latest'
 
+      - name: Install just
+        uses: extractions/setup-just@v1
+    
       - name: Cache clojure dependencies
         uses: actions/cache@v3
         with:
@@ -350,27 +570,6 @@ jobs:
 
       - name: Lint Code
         run: just lint"""
-
-
-systemServerClj : Model -> String
-systemServerClj _ =
-    """(ns system.server
-  (:require [ring.adapter.jetty9 :as jetty9]))
-
-(set! *warn-on-reflection* true)
-
-(defn start-server
-  [handler]
-  (jetty9/run-jetty handler
-                    {:join? false
-                     :host  "0.0.0.0"
-                     :port  (or (some-> (System/getenv "PORT")
-                                        (parse-long))
-                                6000)}))
-
-(defn stop-server
-  [server]
-  (jetty9/stop-server server))"""
 
 
 gitignore : Model -> String
@@ -388,10 +587,11 @@ target
 
 justfile : Model -> String
 justfile _ =
-    """default:
+    """# Lists all the available tasks
+list:
     just --list
 
-# Run the program
+# Run the server
 run:
     clojure -M -m main
 
@@ -443,9 +643,9 @@ makeZip model =
         |> insertStringIntoZip { filename = "project/test/main_test.clj", contents = mainTestClj model }
         |> insertStringIntoZip { filename = "project/.clj-kondo/config.edn", contents = cljkondoConfig model }
         |> insertStringIntoZip { filename = "project/dev/user.clj", contents = devUser model }
-        |> insertStringIntoZip { filename = "project/src/system/server.clj", contents = systemServerClj model }
         |> insertStringIntoZip { filename = "project/src/system.clj", contents = systemClj model }
         |> insertStringIntoZip { filename = "project/src/routes.clj", contents = routesClj model }
+        |> insertStringIntoZip { filename = "project/resources/.gitkeep", contents = resourcesGitkeep model }
 
 
 checkbox : { activated : Bool, text : Element msg, onPress : msg, description : Element msg, singleSelect : Bool } -> Element msg
@@ -530,9 +730,80 @@ page model =
         ]
         [ Element.el
             [ Element.height (Element.fillPortion 9)
-            , Element.width Element.fill
+            , Element.width (Element.px 800)
             ]
             (case model.page of
+                IntelliJAdvice ->
+                    Element.text "GG using intellij"
+
+                VSCodeAdvice ->
+                    Element.text "GG using vscode"
+
+                OtherEditorAdvice ->
+                    Element.text "Good luck man"
+
+                PreferredEditor ->
+                    question "What editor are you most comfortable with"
+                        [ checkbox
+                            { onPress = SelectPreferredEditor VSCode
+                            , activated = model.preferredEditor == Just VSCode
+                            , text =
+                                Element.row [ Element.spacing 8 ]
+                                    [ Element.el [ Font.bold ] (Element.text "VSCode")
+                                    , Element.el [ Font.color (Element.rgb255 92 199 12) ] (Element.text "(recommended)")
+                                    ]
+                            , description =
+                                Element.el
+                                    []
+                                    (Element.paragraph
+                                        [ Element.centerY
+                                        , Element.centerX
+                                        , Element.paddingXY 0 4
+                                        ]
+                                        [ Element.text "Editor from Microsoft. The Clojure plugin is open source and actively maintained. VSCode won't do as well with Java interop as IntelliJ, but most programs don't need to do too much of that." ]
+                                    )
+                            , singleSelect = True
+                            }
+                        , checkbox
+                            { onPress = SelectPreferredEditor IntelliJ
+                            , activated = model.preferredEditor == Just IntelliJ
+                            , text =
+                                Element.row [ Element.spacing 8 ]
+                                    [ Element.el [ Font.bold ] (Element.text "IntelliJ")
+                                    ]
+                            , description =
+                                Element.textColumn
+                                    [ Element.spacing 16 ]
+                                    [ Element.paragraph
+                                        [ Element.centerY
+                                        , Element.centerX
+                                        , Element.paddingXY 0 4
+                                        ]
+                                        [ Element.text "Editor from JetBrains. The Clojure plugin for it is not open source, but there is a freely available non-commercial license and the cost for an individual license is well worth it if you prefer IntelliJ." ]
+                                    ]
+                            , singleSelect = True
+                            }
+                        , checkbox
+                            { onPress = SelectPreferredEditor OtherEditor
+                            , activated = model.preferredEditor == Just OtherEditor
+                            , text =
+                                Element.row [ Element.spacing 8 ]
+                                    [ Element.el [ Font.bold ] (Element.text "Another editor")
+                                    ]
+                            , description =
+                                Element.el
+                                    []
+                                    (Element.paragraph
+                                        [ Element.centerY
+                                        , Element.centerX
+                                        , Element.paddingXY 0 4
+                                        ]
+                                        [ Element.text "Emacs, Vim, Neovim, Notepad, etc. Depending on your editor, getting Clojure working can be an adventure. It has gotten a lot better ever since the advent of clojure-lsp, which if you use a less mainstream editor is a statement which should make sense." ]
+                                    )
+                            , singleSelect = True
+                            }
+                        ]
+
                 Finish ->
                     Element.column [ Element.width Element.fill, Element.height Element.fill ]
                         [ Element.text "Summary"
@@ -578,7 +849,7 @@ page model =
                                         , Element.height (Element.px 30)
                                         ]
                                         { src = "/540px-PostgreSQL_logo.3colors.svg.png", description = "JSON logo" }
-                                    , Element.text "Postgresql"
+                                    , Element.el [ Font.bold ] <| Element.text "Postgresql"
                                     , Element.el [ Font.color (Element.rgb255 92 199 12) ] (Element.text "(recommended)")
                                     ]
                             , description =
@@ -737,6 +1008,32 @@ page model =
                 PickLoggingFramework ->
                     question "Choose a logging framework"
                         [ checkbox
+                            { onPress = SelectLoggingFramework Slf4jSimple
+                            , activated = model.loggingFramework == Slf4jSimple
+                            , text =
+                                Element.row [ Element.spacing 8 ]
+                                    [ Element.image
+                                        [ Element.width (Element.px 60)
+                                        , Element.height (Element.px 30)
+                                        ]
+                                        { src = "/slf4j-logo.jpg", description = "SLF4J logo" }
+                                    , Element.text "slf4j-simple"
+                                    ]
+                            , description =
+                                Element.el
+                                    []
+                                    (Element.paragraph
+                                        [ Element.centerY
+                                        , Element.centerX
+                                        , Element.paddingXY 0 4
+                                        ]
+                                        [ Element.text "Simple logger that unconditionally logs anything INFO or higher."
+                                        , Element.text "If you've never thought about logging too much before, this is a good choice. It is pretty easy to change later if you want to."
+                                        ]
+                                    )
+                            , singleSelect = True
+                            }
+                        , checkbox
                             { onPress = SelectLoggingFramework Logback
                             , activated = model.loggingFramework == Logback
                             , text =
@@ -784,30 +1081,6 @@ page model =
                                     )
                             , singleSelect = True
                             }
-                        , checkbox
-                            { onPress = SelectLoggingFramework Slf4jSimple
-                            , activated = model.loggingFramework == Slf4jSimple
-                            , text =
-                                Element.row [ Element.spacing 8 ]
-                                    [ Element.image
-                                        [ Element.width (Element.px 60)
-                                        , Element.height (Element.px 30)
-                                        ]
-                                        { src = "/slf4j-logo.jpg", description = "SLF4J logo" }
-                                    , Element.text "slf4j-simple"
-                                    ]
-                            , description =
-                                Element.el
-                                    []
-                                    (Element.paragraph
-                                        [ Element.centerY
-                                        , Element.centerX
-                                        , Element.paddingXY 0 4
-                                        ]
-                                        [ Element.text "Simple logger that unconditionally logs anything INFO or higher to System.err" ]
-                                    )
-                            , singleSelect = True
-                            }
                         ]
             )
         , if model.page /= GetStarted && model.page /= Finish then
@@ -824,16 +1097,20 @@ page model =
                     , Font.color (Element.rgb255 255 255 255)
                     ]
                     { onPress = Just Prev, label = Element.text "Prev" }
-                , Input.button
-                    [ Element.alignRight
-                    , Element.paddingXY 16 8
-                    , Element.Background.color (Element.rgb255 92 199 12)
-                    , Element.Border.rounded 10
-                    , Element.Border.color (Element.rgb255 92 199 12)
-                    , Element.Border.width 2
-                    , Font.color (Element.rgb255 255 255 255)
-                    ]
-                    { onPress = Just Next, label = Element.text "Next" }
+                , if model.page == PreferredEditor && model.preferredEditor == Nothing then
+                    Element.none
+
+                  else
+                    Input.button
+                        [ Element.alignRight
+                        , Element.paddingXY 16 8
+                        , Element.Background.color (Element.rgb255 92 199 12)
+                        , Element.Border.rounded 10
+                        , Element.Border.color (Element.rgb255 92 199 12)
+                        , Element.Border.width 2
+                        , Font.color (Element.rgb255 255 255 255)
+                        ]
+                        { onPress = Just Next, label = Element.text "Next" }
                 ]
 
           else
@@ -845,48 +1122,55 @@ page model =
         ]
 
 
-view : Model -> Html Msg
+view : Model -> Browser.Document Msg
 view model =
-    Element.layout
-        [ Font.family
-            [ Font.typeface "Open Sans"
-            , Font.sansSerif
+    { title = "Clojure Quickstart"
+    , body =
+        [ Element.layout
+            [ Font.family
+                [ Font.typeface "Open Sans"
+                , Font.sansSerif
+                ]
             ]
-        ]
-        (Element.column
-            [ Element.width Element.fill
-            , Element.height Element.fill
-
-            -- linear-gradient(to right,#0f2242,#2452a1)
-            ]
-            [ Element.row
+            (Element.column
                 [ Element.width Element.fill
-                , Element.height (Element.fillPortion 1)
-                , Element.centerX
-                , Element.Background.gradient
-                    { angle = 1.57079632679
-                    , steps =
-                        [ Element.rgb255 15 34 66
-                        , Element.rgb255 36 82 161
-                        ]
-                    }
-                , Element.spacing 16
-                , Element.paddingXY 16 0
+                , Element.height Element.fill
+
+                -- linear-gradient(to right,#0f2242,#2452a1)
                 ]
-                [ Element.image [ Element.width (Element.px 60) ]
-                    { src = "/clojure-logo-120b.png", description = "Clojure Logo" }
-                , Element.el [ Font.size 36, Font.color (Element.rgb255 255 255 255) ] (Element.text "Clojure Quickstart")
+                [ Element.row
+                    [ Element.width Element.fill
+                    , Element.height (Element.fillPortion 1)
+                    , Element.centerX
+                    , Element.Background.gradient
+                        { angle = 1.57079632679
+                        , steps =
+                            [ Element.rgb255 15 34 66
+                            , Element.rgb255 36 82 161
+                            ]
+                        }
+                    , Element.spacing 16
+                    , Element.paddingXY 16 0
+                    ]
+                    [ Element.image [ Element.width (Element.px 60) ]
+                        { src = "/clojure-logo-120b.png", description = "Clojure Logo" }
+                    , Element.el [ Font.size 36, Font.color (Element.rgb255 255 255 255) ] (Element.text "Clojure Quickstart")
+                    ]
+                , Element.column [ Element.width Element.fill, Element.height (Element.fillPortion 9) ]
+                    [ page model
+                    ]
                 ]
-            , Element.column [ Element.width Element.fill, Element.height (Element.fillPortion 9) ]
-                [ page model
-                ]
-            ]
-        )
+            )
+        ]
+    }
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
+        SelectPreferredEditor preferredEditor ->
+            ( { model | preferredEditor = Just preferredEditor }, Cmd.none )
+
         SelectDataFormat dataFormat ->
             ( { model
                 | dataformats =
@@ -923,6 +1207,26 @@ update msg model =
                 | page =
                     case model.page of
                         GetStarted ->
+                            PreferredEditor
+
+                        PreferredEditor ->
+                            case model.preferredEditor of
+                                Just IntelliJ ->
+                                    IntelliJAdvice
+
+                                Just VSCode ->
+                                    VSCodeAdvice
+
+                                _ ->
+                                    OtherEditorAdvice
+
+                        IntelliJAdvice ->
+                            DataFormats
+
+                        VSCodeAdvice ->
+                            DataFormats
+
+                        OtherEditorAdvice ->
                             DataFormats
 
                         DataFormats ->
@@ -954,6 +1258,26 @@ update msg model =
                             DataFormats
 
                         DataFormats ->
+                            case model.preferredEditor of
+                                Just IntelliJ ->
+                                    IntelliJAdvice
+
+                                Just VSCode ->
+                                    VSCodeAdvice
+
+                                _ ->
+                                    OtherEditorAdvice
+
+                        IntelliJAdvice ->
+                            PreferredEditor
+
+                        VSCodeAdvice ->
+                            PreferredEditor
+
+                        OtherEditorAdvice ->
+                            PreferredEditor
+
+                        PreferredEditor ->
                             GetStarted
 
                         GetStarted ->
@@ -969,8 +1293,54 @@ update msg model =
                 |> File.Download.bytes "archive.zip" "application/zip"
             )
 
+        UrlRequest request ->
+            case request of
+                Browser.Internal url ->
+                    ( model, Navigation.pushUrl model.navKey (Url.toString url) )
+
+                Browser.External url ->
+                    ( model, Navigation.load url )
+
+        UrlChange url ->
+            ( { model | url = AppUrl.fromUrl url }
+            , Cmd.none
+            )
+
         NoOp ->
             ( model, Cmd.none )
+
+
+updateWrapped : Msg -> Model -> ( Model, Cmd Msg )
+updateWrapped msg model =
+    case msg of
+        UrlRequest _ ->
+            update msg model
+
+        NoOp ->
+            update msg model
+
+        UrlChange _ ->
+            update msg model
+
+        _ ->
+            let
+                ( model2, cmd ) =
+                    update msg model
+
+                url =
+                    model2.url
+
+                newUrl =
+                    { url | queryParameters = modelToQueryParams model }
+
+                model3 =
+                    { model2 | url = newUrl }
+            in
+            if newUrl /= model.url then
+                ( hydrateModel model3, Cmd.batch [ cmd, Navigation.pushUrl model.navKey (AppUrl.toString newUrl) ] )
+
+            else
+                ( model3, Cmd.none )
 
 
 subscriptions : Model -> Sub Msg
@@ -978,11 +1348,23 @@ subscriptions _ =
     Sub.none
 
 
+onUrlRequest : Browser.UrlRequest -> Msg
+onUrlRequest =
+    UrlRequest
+
+
+onUrlChange : Url.Url -> Msg
+onUrlChange =
+    UrlChange
+
+
 main : Program Flags Model Msg
 main =
-    Browser.element
+    Browser.application
         { init = init
         , view = view
-        , update = update
+        , update = updateWrapped
         , subscriptions = subscriptions
+        , onUrlRequest = onUrlRequest
+        , onUrlChange = onUrlChange
         }
