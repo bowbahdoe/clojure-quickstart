@@ -1,3 +1,4 @@
+on: push
 steps:
   - uses: jorelali/setup-elm@v5
     with:
