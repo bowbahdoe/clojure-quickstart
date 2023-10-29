@@ -1703,24 +1703,31 @@ view model =
 
                 -- linear-gradient(to right,#0f2242,#2452a1)
                 ]
-                [ Element.row
+                [ Element.link
                     [ Element.width Element.fill
                     , Element.height (Element.fillPortion 1)
-                    , Element.centerX
-                    , Element.Background.gradient
-                        { angle = 1.57079632679
-                        , steps =
-                            [ Element.rgb255 15 34 66
-                            , Element.rgb255 36 82 161
+                    ]
+                    { url = "/"
+                    , label =
+                        Element.row
+                            [ Element.width Element.fill
+                            , Element.height (Element.fillPortion 1)
+                            , Element.centerX
+                            , Element.Background.gradient
+                                { angle = 1.57079632679
+                                , steps =
+                                    [ Element.rgb255 15 34 66
+                                    , Element.rgb255 36 82 161
+                                    ]
+                                }
+                            , Element.spacing 16
+                            , Element.paddingXY 16 0
                             ]
-                        }
-                    , Element.spacing 16
-                    , Element.paddingXY 16 0
-                    ]
-                    [ Element.image [ Element.width (Element.px 60) ]
-                        { src = "/clojure-logo-120b.png", description = "Clojure Logo" }
-                    , Element.el [ Font.size 36, Font.color (Element.rgb255 255 255 255) ] (Element.text "Clojure Quickstart")
-                    ]
+                            [ Element.image [ Element.width (Element.px 60) ]
+                                { src = "/clojure-logo-120b.png", description = "Clojure Logo" }
+                            , Element.el [ Font.size 36, Font.color (Element.rgb255 255 255 255) ] (Element.text "Clojure Quickstart")
+                            ]
+                    }
                 , Element.column [ Element.width Element.fill, Element.height (Element.fillPortion 9) ]
                     [ page model
                     ]
