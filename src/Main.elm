@@ -626,7 +626,7 @@ mainTestClj _ =
 
 systemClj : Model -> String
 systemClj model =
-    """{{ns_declaration}}}}
+    """{{ns_declaration}}
 
 (set! *warn-on-reflection* true)
 
